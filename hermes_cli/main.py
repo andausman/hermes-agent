@@ -3555,6 +3555,7 @@ def cmd_model(args):
         except Exception:
             pass
     select_provider_and_model(args=args)
+    _maybe_offer_fallback_setup()
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:
@@ -3570,6 +3571,66 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
         return _p is not None and _p.auth_type == "api_key"
     except Exception:
         return False
+
+
+def _maybe_offer_fallback_setup() -> None:
+    """Offer to configure a fallback model after an interactive model session.
+
+    Called from the interactive entry points of ``select_provider_and_model``
+    (``hermes model``, the setup wizard, and first-run setup). This is the
+    moment a user has just been thinking about models and knows which
+    providers they have credentials for — the best time to ask about a
+    backup, and the moment the fallback feature is otherwise invisible (it
+    is only reachable via the separate ``hermes fallback`` command).
+
+    Fires whenever a primary exists and no fallback chain is configured yet,
+    including when the user picked "Leave unchanged" — choosing not to touch
+    the primary says nothing about wanting a backup. Once a chain exists the
+    offer goes quiet permanently (manage it via ``hermes fallback``).
+
+    Reuses :func:`hermes_cli.fallback_cmd.cmd_fallback_add`, which runs the
+    same canonical picker with snapshot/restore of the primary route.
+
+    Strictly best-effort: every failure mode — including SystemExit from
+    ``cmd_fallback_add``'s own TTY/auth guards — is swallowed here. The
+    primary is already configured and ``cmd_fallback_add`` restores state on
+    its internal exit paths, so a cancelled or failed fallback pick must
+    never turn a successful setup into a reported failure.
+    """
+    try:
+        import sys
+
+        if not sys.stdin.isatty():
+            return  # no human available to answer — skip silently
+
+        from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        cfg = load_config()
+        if not isinstance(cfg.get("model"), dict):
+            return  # no primary selected — nothing to back up
+        if get_fallback_chain(cfg):
+            return  # chain already configured — manage via `hermes fallback`
+
+        from hermes_cli.setup import prompt_yes_no
+
+        print()
+        if not prompt_yes_no(
+            "  Add a fallback model? (tried automatically when the primary "
+            "rate-limits or fails)",
+            default=False,
+        ):
+            return
+
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+
+        cmd_fallback_add(args=None)
+    except (SystemExit, KeyboardInterrupt, EOFError):
+        # See docstring: best-effort only. cmd_fallback_add restores the
+        # primary route on its own exit paths before raising.
+        logger.debug("fallback offer aborted", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — see docstring: never break setup
+        logger.debug("fallback offer failed: %s", exc, exc_info=True)
 
 
 def select_provider_and_model(args=None):

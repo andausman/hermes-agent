@@ -19,6 +19,8 @@ Storage: ``fallback_providers`` in ``~/.hermes/config.yaml`` (top-level, list of
 from __future__ import annotations
 
 import copy
+import sys
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
@@ -27,6 +29,60 @@ from hermes_cli.fallback_config import get_fallback_chain
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+class _FilteredStdout:
+    """stdout proxy that drops the picker's 'Default model set to: ...' line.
+
+    The canonical model flows print that confirmation unconditionally after a
+    model pick. Inside ``hermes fallback add`` it is factually wrong — the
+    primary is snapshotted and restored, and the selection becomes a fallback
+    entry instead. Everything else passes through untouched so interactive
+    prompts, warnings, and provider-specific output stay visible. The proxy
+    delegates ``isatty`` and friends to the wrapped stream, so TTY-detecting
+    prompt helpers (line_input, masked_secret_prompt) keep their interactive
+    behavior.
+    """
+
+    _ECHO_PREFIX = "Default model set to:"
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._skip_line = False
+
+    def write(self, text):
+        if self._ECHO_PREFIX in text:
+            # The line may be embedded in a larger chunk; drop just the line.
+            parts = text.split("\n")
+            kept = [
+                part for part in parts
+                if not part.lstrip().startswith(self._ECHO_PREFIX)
+            ]
+            # Remember if we cut a line so a continuation write of the
+            # remaining "\n" doesn't leave a stray blank line behind.
+            self._skip_line = len(kept) != len(parts)
+            if kept and any(part for part in kept):
+                self._stream.write("\n".join(kept))
+            return len(text)
+        self._skip_line = False
+        return self._stream.write(text)
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+@contextmanager
+def _suppress_primary_echo():
+    """Hide the misleading 'Default model set to' echo during fallback add."""
+    real_stdout = sys.stdout
+    sys.stdout = _FilteredStdout(real_stdout)
+    try:
+        yield
+    finally:
+        sys.stdout = real_stdout
+
 
 def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return the normalized fallback chain as a list of dicts.
@@ -163,7 +219,8 @@ def cmd_fallback_add(args) -> None:
     print()
 
     try:
-        select_provider_and_model(args=args)
+        with _suppress_primary_echo():
+            select_provider_and_model(args=args)
     except SystemExit:
         # Some provider flows exit on auth failure — restore state and re-raise.
         _restore_model_cfg(model_before)

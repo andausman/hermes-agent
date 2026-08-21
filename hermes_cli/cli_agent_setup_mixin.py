@@ -250,8 +250,16 @@ class CLIAgentSetupMixin:
             return False
 
         try:
-            from hermes_cli.main import select_provider_and_model
+            from hermes_cli.main import (
+                _maybe_offer_fallback_setup,
+                select_provider_and_model,
+            )
             select_provider_and_model()
+            # First primary just configured — offer a fallback now, while
+            # the provider context is fresh. Best-effort: never blocks
+            # first-run completion. (This path only runs when no provider
+            # was configured, so any return means a primary now exists.)
+            _maybe_offer_fallback_setup()
         except (KeyboardInterrupt, EOFError, SystemExit):
             print()
             _cprint("  Setup cancelled. Run 'hermes model' any time.")

@@ -902,6 +902,13 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         logger.debug("select_provider_and_model error during setup: %s", exc)
         print_warning(f"Provider setup encountered an error: {exc}")
         print_info("You can try again later with: hermes model")
+    else:
+        # Primary configured successfully — offer a fallback while the
+        # provider context is fresh. Never runs when the picker was
+        # cancelled/skipped (the except branches above handle that).
+        from hermes_cli.main import _maybe_offer_fallback_setup
+
+        _maybe_offer_fallback_setup()
 
     # Re-sync the wizard's config dict from what cmd_model saved to disk.
     # This is critical: cmd_model writes to disk via its own load/save cycle,
